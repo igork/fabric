@@ -4,7 +4,6 @@ import com.pwc.genome.model.Resume;
 import org.apache.pulsar.client.api.*;
 import org.apache.pulsar.shade.com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.pulsar.shade.com.fasterxml.jackson.databind.SerializationFeature;
-import org.apache.pulsar.shade.org.codehaus.jackson.map.util.JSONPObject;
 
 import java.io.StringWriter;
 
@@ -12,6 +11,9 @@ import java.io.StringWriter;
 cd /Applications/
 cd apache-pulsar-2.5.0/
 bin/pulsar-client produce my_topic --messages "{\"title\":6666}"
+
+the following message will stop consuming()
+bin/pulsar-client produce my_topic --messages "{\"title\":\"stop\"}"
 
  */
 
@@ -45,12 +47,12 @@ schema
 
 public class PulsarProcess {
 
-    static PulsarClient client;
-    static Consumer consumer;
-    static Producer producer;
+    static private PulsarClient client = null;
+    static private Consumer<byte[]> consumer = null;
+    static private Producer<String> producer = null;
 
-    static String topic = "my_topic";
-    static String subscription = "my_subscr";
+    final static String topic = "my_topic";
+    final static String subscription = "my_subscr";
 
     public static void main(String[] args){
 
@@ -95,19 +97,23 @@ public class PulsarProcess {
 
     private static void consuming() throws Exception{
 
-            while (true) {
+        boolean timeToStop = false;
+
+        while (!timeToStop) {
                 // Wait for a message
-                Message msg = consumer.receive();
+                Message<byte[]> msg = consumer.receive();
 
                 try {
                     // Do something with the message
-                    parsing(msg.getData());
+                    Resume res = parsing(msg.getData());
 
                     // Acknowledge the message so that it can be deleted by the message broker
                     consumer.acknowledge(msg);
+
+                    timeToStop = timeToStop(res);
                 } catch (Exception e) {
                     // Message failed to process, redeliver later
-                    consumer.negativeAcknowledge(msg);
+                    //consumer.negativeAcknowledge(msg);
                 }
             }
 
@@ -146,12 +152,21 @@ public class PulsarProcess {
         return stringRes.toString();
 
     }
-    private static Object parsing( byte[] message ){
+    private static Resume parsing( byte[] message ){
 
         return parsing(new String(message));
     }
 
-    private static Object parsing( String message ){
+    private static boolean timeToStop(Resume res){
+        if (res==null)
+            return false;
+        if (res.getTitle()==null)
+            return false;
+
+        return res.getTitle().equalsIgnoreCase("stop");
+    }
+
+    private static Resume parsing( String message ){
 
         System.out.printf("Message received: %s\n", message);
 
@@ -170,9 +185,8 @@ public class PulsarProcess {
 
             return res;
         } catch (Exception e) {
-
+            //to log
         }
-
 
         return null;
     }
