@@ -1,11 +1,20 @@
 package com.pwc.genome.Consumers;
 
+import com.pwc.genome.database.Logger;
+import com.pwc.genome.database.MongoServer;
+import com.pwc.genome.messages.BaseMessage;
+import com.pwc.genome.messages.ResumeMessage;
+import com.pwc.genome.messages.SomeMessage;
+import com.pwc.genome.messages.StringMessage;
 import com.pwc.genome.model.Resume;
 import org.apache.pulsar.client.api.*;
 import org.apache.pulsar.shade.com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.pulsar.shade.com.fasterxml.jackson.databind.SerializationFeature;
 
 import java.io.StringWriter;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Map;
 
 /*
 cd /Applications/
@@ -53,21 +62,81 @@ public class PulsarProcess {
 
     final static String topic = "my_topic";
     final static String subscription = "my_subscr";
+    final static String serviceUrl = "pulsar://localhost:6650";
 
-    public static void main(String[] args){
+    static Date dt0 = null;
+    static int steps = 0;
 
-        try {
+    static boolean isSavingInThread = true;
+    static String[] admin = {"stop","more","load"};
 
-            init();
+    public static void pulsarTest() throws Exception{
+        Logger.show("Pulsar consumer starts... " + dt0);
 
-            producing();
+        init();
 
-            consuming();
+        producing();
 
-            close();
+        consuming();
 
-        } catch (Exception e){
-            e.printStackTrace();
+        close();
+
+    }
+
+
+    public static void loadTest() throws Exception{
+
+        Logger.show("Load & performance starts... " + dt0);
+        if (steps>1)
+            Logger.show("steps: " + steps);
+
+
+        Logger.hide();
+
+        init();
+
+        for( int i=0; i<steps; i++) {
+            try {
+
+                producing();
+
+                produceStop();
+
+                consuming();
+
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+
+        Logger.show();
+
+        close();
+
+        Logger.show();
+
+    }
+
+    public static void main(String[] args) throws Exception{
+
+        if (args!=null && args.length>0 && args[0].equalsIgnoreCase("load")){
+            steps = 1;
+            if (args.length>1){
+                try {
+                    int iper = Integer.parseInt(args[1]);
+                    if (iper>0)
+                        steps = iper;
+                } catch (Exception e){
+                    Logger.show("cannot parse " + args[1] + " to in");
+                }
+            }
+
+            loadTest();
+
+        } else {
+
+            pulsarTest();
+
         }
 
 
@@ -75,7 +144,7 @@ public class PulsarProcess {
 
     private static void init() throws Exception{
         client = PulsarClient.builder()
-                .serviceUrl("pulsar://localhost:6650")
+                .serviceUrl(serviceUrl)
                 .build();
 
         consumer = client.newConsumer()
@@ -86,12 +155,35 @@ public class PulsarProcess {
                 .topic(topic)
                 .create();
 
+        MongoServer.init();
+
+        //start timing
+        dt0 = new Date();
+
     }
 
     private static void close() throws Exception{
+
+        //show the final time log
+        Logger.show();
+
+        Date dt99 = new Date();
+        long t = Math.abs(dt0.getTime() - dt99.getTime());
+
+        Logger.show("Running time:  " + t );
+        if (steps>1)
+            Logger.show("Average step:" + (int) ((float) t / steps) );
+
+
+        //closing servers
         producer.close();
         consumer.close();
         client.close();
+        MongoServer.close();
+
+        producer=null;
+        consumer=null;
+        client=null;
 
     }
 
@@ -103,92 +195,144 @@ public class PulsarProcess {
                 // Wait for a message
                 Message<byte[]> msg = consumer.receive();
 
-                try {
+                //try {
                     // Do something with the message
-                    Resume res = parsing(msg.getData());
+                    BaseMessage result = parsing(msg.getData());
 
                     // Acknowledge the message so that it can be deleted by the message broker
                     consumer.acknowledge(msg);
 
-                    timeToStop = timeToStop(res);
-                } catch (Exception e) {
+                    saving(result);
+
+                    if (wantProduceMore(result)){
+                        producing();
+                    }
+
+                    timeToStop = timeToStop(result);
+
+                //} catch (Exception e) {
                     // Message failed to process, redeliver later
                     //consumer.negativeAcknowledge(msg);
-                }
+                //}
             }
 
+    }
 
+    private static void produceStop() throws Exception {
 
-
+        //string
+        producer.send(new StringMessage("stop").toJson());
     }
 
     private static void producing() throws Exception{
 
-        producer.send("My message");
+        //bytes
+        byte[] b = new byte[] { 97, 98, 98, 0, 11};
+        producer.send(new BaseMessage(b).toJson());
 
+        //string
+        producer.send( new StringMessage("My message").toJson());
+
+        //resume
         Resume res = new Resume();
-        res.setTitle("produced title");
+        res.setTitle("produced resume title");
+        ResumeMessage rm = new ResumeMessage(res);
+        producer.send(rm.toJson());
 
-        producer.send(toJson(res));
+        //something else
+        SomeMessage sm = new SomeMessage("some data");
+        producer.send(sm.toJson());
 
-    }
-
-    private static String toJson(Resume res){
-        ObjectMapper objectMapper = new ObjectMapper();
-
-        //configure Object mapper for pretty print
-        objectMapper.configure(SerializationFeature.INDENT_OUTPUT, true);
-
-        StringWriter stringRes = new StringWriter();
-
-        try {
-            //writing to console, can write to any output stream such as file
-            objectMapper.writeValue(stringRes, res);
-            System.out.println("converting class to json: " + stringRes);
-        } catch (Exception e){
-            e.printStackTrace();
-        }
-
-        return stringRes.toString();
 
     }
-    private static Resume parsing( byte[] message ){
+
+    private static BaseMessage parsing( byte[] message ){
 
         return parsing(new String(message));
     }
 
-    private static boolean timeToStop(Resume res){
-        if (res==null)
-            return false;
-        if (res.getTitle()==null)
+    private static boolean wantProduceMore(Object object){
+        if (object==null)
             return false;
 
-        return res.getTitle().equalsIgnoreCase("stop");
+        if (!(object instanceof StringMessage))
+            return false;
+
+        StringMessage msg = (StringMessage)object;
+        String text = msg.getData();
+
+        if (text==null)
+            return false;
+
+        return text.equalsIgnoreCase("more");
     }
 
-    private static Resume parsing( String message ){
+    private static boolean timeToStop(Object object){
+        if (object==null)
+            return false;
 
-        System.out.printf("Message received: %s\n", message);
+        if (!(object instanceof StringMessage))
+            return false;
 
-        ObjectMapper objectMapper = new ObjectMapper();
+        StringMessage msg = (StringMessage)object;
+        String text = msg.getData();
 
-        try {
-            //convert json string to object
-            Resume res = objectMapper.readValue(message, Resume.class);
+        if (text==null)
+            return false;
 
-            System.out.println("Resume title parsed: " + res.getTitle());
+        return text.equalsIgnoreCase("stop");
+    }
+    private static boolean startLoadTest(Object object){
+        return false;
+    }
 
-            //convert Object to json string
-            //Resume res2 = new Resume();
-            //res2.setTitle("sample title");
-            //toJson(res2);
+    private static BaseMessage parsing( String message ) {
 
-            return res;
-        } catch (Exception e) {
-            //to log
+        Logger.log("\nMessage received: " + message + "\n");
+
+        BaseMessage some = null;
+        if (BaseMessage.isJSONValid(message)){
+            some = ResumeMessage.fromString(message);
+            if (some==null){
+                some = SomeMessage.fromString(message);
+            }
+        } else {
+
+            if (BaseMessage.isStringOfBytes(message)){
+                some = BaseMessage.fromString(message);
+            }
+
+        }
+        if (some==null){
+            some = StringMessage.fromString(message);
         }
 
-        return null;
+        return some;
+
+
     }
+
+    private static boolean isAdminFunction(Object msg){
+
+        return timeToStop(msg) || wantProduceMore(msg) || startLoadTest(msg);
+    }
+    public static void saving(BaseMessage message){
+
+        //do not save admin messages
+        if (isAdminFunction(message)){
+            return;
+        }
+
+        Map<String,String> map = new HashMap<String,String>();
+        map.put("type",message.getType());
+        map.put("content",message.toJson());
+        map.put("userid","pulsar");
+
+        if (isSavingInThread)
+            MongoServer.saveInThread(map);
+        else
+            MongoServer.save(map);
+    }
+
 
 }
