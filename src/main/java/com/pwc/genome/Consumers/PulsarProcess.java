@@ -22,7 +22,7 @@ cd apache-pulsar-2.5.0/
 bin/pulsar-client produce my_topic --messages "{\"title\":6666}"
 
 the following message will stop consuming()
-bin/pulsar-client produce my_topic --messages "{\"title\":\"stop\"}"
+bin/pulsar-client produce my_topic --messages "stop"
 
  */
 
